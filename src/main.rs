@@ -1,22 +1,16 @@
 use std::fs;
-use std::path::PathBuf;
 use eframe::egui;
-
-// Simple Candle model module
-mod simple_model;
-use simple_model::SimpleEmbedder;
-use candle_core::{Device, Result};
 
 fn main() -> eframe::Result<()> {
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([900.0, 700.0])
-            .with_min_inner_size([700.0, 500.0]),
+            .with_inner_size([800.0, 600.0])
+            .with_min_inner_size([600.0, 400.0]),
         ..Default::default()
     };
     
     eframe::run_native(
-        "Candle Embedding Demo",
+        "Simple Embedding Demo",
         native_options,
         Box::new(|cc| Box::new(MyApp::new(cc))),
     )
@@ -26,10 +20,11 @@ struct MyApp {
     file_path: Option<String>,
     file_content: String,
     chunks: Vec<String>,
-    embeddings: Vec<Vec<f32>>,
+    embeddings: Vec<Vec<f32>>,  // We'll generate simple embeddings
     is_processing: bool,
     error_message: Option<String>,
-    embedder: Option<SimpleEmbedder>,  // Our Candle model
+    words_per_chunk: usize,
+    embedding_dim: usize,
 }
 
 impl MyApp {
@@ -41,22 +36,9 @@ impl MyApp {
             embeddings: Vec::new(),
             is_processing: false,
             error_message: None,
-            embedder: None,
+            words_per_chunk: 50,
+            embedding_dim: 16,
         }
-    }
-    
-    fn initialize_embedder(&mut self) -> Result<()> {
-        let device = Device::Cpu;
-        println!("🔧 Initializing Candle embedder on {:?}", device);
-        
-        // Create a simple embedding model
-        // Vocab size: 256 (for ASCII characters)
-        // Embedding dimension: 16
-        let embedder = SimpleEmbedder::new(256, 16, &device)?;
-        
-        self.embedder = Some(embedder);
-        println!("✅ Candle embedder initialized");
-        Ok(())
     }
     
     fn pick_file(&mut self) {
@@ -94,103 +76,45 @@ impl MyApp {
         println!("Created {} chunks", self.chunks.len());
     }
     
-    // Use Candle to generate embeddings
-    fn generate_candle_embeddings(&mut self) {
+    // SIMPLE embedding - NO Candle
+    fn generate_simple_embeddings(&mut self, dimensions: usize) {
         self.embeddings.clear();
         self.is_processing = true;
         
-        // Initialize embedder if not already done
-        if self.embedder.is_none() {
-            if let Err(e) = self.initialize_embedder() {
-                self.error_message = Some(format!("Failed to initialize embedder: {}", e));
-                self.is_processing = false;
-                return;
-            }
-        }
-        
-        let embedder = self.embedder.as_ref().unwrap();
-        
         for (i, chunk) in self.chunks.iter().enumerate() {
-            // Convert text to token IDs (simple ASCII conversion)
-            let token_ids: Vec<u32> = chunk
-                .chars()
-                .take(100) // Limit tokens per chunk
-                .map(|c| c as u32 % 256) // Convert to 0-255 range
-                .collect();
+            let mut embedding = vec![0.0; dimensions];
             
-            if token_ids.is_empty() {
-                continue;
+            // Fill based on deterministic char-derived values
+            for (j, c) in chunk.chars().enumerate().take(dimensions) {
+                embedding[j] = (c as u32 % 100) as f32 / 100.0;
             }
             
-            // Use Candle to generate embedding
-            match embedder.embed(&token_ids) {
-                Ok(tensor) => {
-                    // Convert tensor to Vec<f32>
-                    match tensor.to_vec2::<f32>() {
-                        Ok(vec2d) => {
-                            // Take the mean of all token embeddings in this chunk
-                            if !vec2d.is_empty() {
-                                let dim = vec2d[0].len();
-                                let mut avg_embedding = vec![0.0; dim];
-                                
-                                for token_vec in &vec2d {
-                                    for (j, &val) in token_vec.iter().enumerate() {
-                                        if j < dim {
-                                            avg_embedding[j] += val;
-                                        }
-                                    }
-                                }
-                                
-                                // Average
-                                let count = vec2d.len() as f32;
-                                for val in avg_embedding.iter_mut() {
-                                    *val /= count;
-                                }
-                                
-                                // Normalize
-                                let norm: f32 = avg_embedding.iter().map(|x| x * x).sum::<f32>().sqrt();
-                                if norm > 0.0 {
-                                    for val in avg_embedding.iter_mut() {
-                                        *val /= norm;
-                                    }
-                                }
-                                
-                                self.embeddings.push(avg_embedding);
-                            }
-                        }
-                        Err(e) => {
-                            println!("Error converting tensor: {}", e);
-                        }
-                    }
-                }
-                Err(e) => {
-                    println!("Error generating embedding for chunk {}: {}", i, e);
-                }
+            // Add simple word hints
+            if chunk.contains("the") { embedding[0] += 0.1; }
+            if chunk.contains("and") { embedding[1] += 0.1; }
+            if chunk.contains("for") { embedding[2] += 0.1; }
+            
+            // Normalize
+            let norm: f32 = embedding.iter().map(|x| x * x).sum::<f32>().sqrt();
+            if norm > 0.0 {
+                for v in embedding.iter_mut() { *v /= norm; }
             }
             
-            // Progress update
-            if i % 5 == 0 {
-                println!("Candle: Processed {}/{} chunks", i + 1, self.chunks.len());
-            }
+            self.embeddings.push(embedding);
+            if i % 5 == 0 { println!("Processed {}/{} chunks", i + 1, self.chunks.len()); }
         }
         
         self.is_processing = false;
         if !self.embeddings.is_empty() {
-            println!("✅ Generated {} Candle embeddings (dimension: {})", 
-                     self.embeddings.len(), 
-                     self.embeddings[0].len());
+            println!("Generated {} embeddings of dimension {}", self.embeddings.len(), dimensions);
         }
     }
     
     fn cosine_similarity(&self, a: &[f32], b: &[f32]) -> f32 {
-        if a.len() != b.len() || a.is_empty() {
-            return 0.0;
-        }
-        
+        if a.len() != b.len() || a.is_empty() { return 0.0; }
         let dot: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
         let norm_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
         let norm_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
-        
         dot / (norm_a * norm_b)
     }
 }
@@ -198,172 +122,72 @@ impl MyApp {
 impl eframe::App for MyApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         egui::CentralPanel::default().show(ctx, |ui| {
-            ui.heading("🔥 Candle Embedding Demo");
+            ui.heading("📚 File Embedding Demo (no Candle)");
             ui.separator();
-            
-            // Initialize Candle button
-            if self.embedder.is_none() && ui.button("🔧 Initialize Candle Engine").clicked() {
-                match self.initialize_embedder() {
-                    Ok(_) => {
-                        ui.label("✅ Candle initialized successfully!");
-                    }
-                    Err(e) => {
-                        self.error_message = Some(format!("Candle init failed: {}", e));
-                    }
-                }
-            }
-            
-            if self.embedder.is_some() {
-                ui.colored_label(egui::Color32::GREEN, "✅ Candle is ready!");
-            }
             
             // File selection
-            ui.separator();
-            if ui.button("📂 Select Text File").clicked() {
-                self.pick_file();
-            }
+            if ui.button("📂 Select Text File").clicked() { self.pick_file(); }
             
             if let Some(path) = &self.file_path {
                 ui.label(format!("📄 Selected: {}", path));
-                
-                // File stats
                 ui.horizontal(|ui| {
                     ui.label(format!("Size: {} chars", self.file_content.len()));
                     ui.label(format!("Words: {}", self.file_content.split_whitespace().count()));
                 });
                 
-                // Chunking
+                // Chunking controls
                 ui.separator();
-                if ui.button("✂️ Create Text Chunks (50 words each)").clicked() {
-                    self.chunk_text(50);
-                }
+                ui.horizontal(|ui| {
+                    ui.label("Split into chunks of");
+                    ui.add(egui::DragValue::new(&mut self.words_per_chunk).speed(1).clamp_range(10..=200));
+                    ui.label("words");
+                });
+                if ui.button("✂️ Create Chunks").clicked() { self.chunk_text(self.words_per_chunk); }
                 
-                // Show chunks
+                // Embedding controls
                 if !self.chunks.is_empty() {
                     ui.label(format!("✅ Created {} text chunks", self.chunks.len()));
-                    
-                    // Show first chunk as example
-                    if ui.collapsing("View first chunk", |ui| {
-                        if !self.chunks.is_empty() {
-                            ui.label(&self.chunks[0]);
-                        }
-                    }).header_response.clicked() {
-                        // Collapsible opened/closed
-                    }
-                    
-                    // Candle embedding button
                     ui.separator();
-                    if self.embedder.is_some() {
-                        if ui.button("🧬 Generate Candle Embeddings").clicked() {
-                            self.generate_candle_embeddings();
-                        }
-                    } else {
-                        ui.colored_label(egui::Color32::YELLOW, 
-                            "⚠️ Initialize Candle first (click button above)");
+                    ui.horizontal(|ui| {
+                        ui.label("Embedding dimension:");
+                        ui.add(egui::DragValue::new(&mut self.embedding_dim).speed(1).clamp_range(8..=256));
+                    });
+                    if ui.button("🧬 Generate Embeddings").clicked() {
+                        self.generate_simple_embeddings(self.embedding_dim);
                     }
                 }
                 
-                // Show embeddings
+                // Embeddings view
                 if !self.embeddings.is_empty() {
                     ui.separator();
-                    ui.heading("📊 Candle Embeddings Generated");
+                    ui.heading("📊 Embeddings Generated");
+                    ui.label(format!("Total: {}", self.embeddings.len()));
+                    ui.label(format!("Dimension: {}", self.embeddings[0].len()));
                     
-                    ui.label(format!("Total: {} embeddings", self.embeddings.len()));
-                    ui.label(format!("Dimension: {} numbers per embedding", 
-                                     self.embeddings[0].len()));
-                    
-                    // Embedding visualization
-                    egui::ScrollArea::vertical()
-                        .max_height(200.0)
-                        .show(ui, |ui| {
-                            ui.collapsing("Technical Details", |ui| {
-                                ui.label("Model: Simple neural network (Candle)");
-                                ui.label("Input: Character tokens (0-255)");
-                                ui.label("Output: 16-dimensional normalized vectors");
-                                
-                                if !self.embeddings.is_empty() {
-                                    ui.separator();
-                                    ui.label("First embedding vector:");
-                                    ui.code(format!("[{}]", 
-                                        self.embeddings[0].iter()
-                                            .map(|v| format!("{:.4}", v))
-                                            .collect::<Vec<_>>()
-                                            .join(", ")
-                                    ));
-                                }
-                            });
+                    egui::ScrollArea::vertical().max_height(160.0).show(ui, |ui| {
+                        ui.collapsing("First embedding vector", |ui| {
+                            ui.code(format!("{:.4?}", self.embeddings[0].iter().take(12).collect::<Vec<_>>()));
+                            if self.embeddings[0].len() > 12 { ui.label("... (truncated)"); }
                         });
-                    
-                    // Similarity analysis
-                    if self.embeddings.len() > 1 {
-                        ui.separator();
-                        let similarity = self.cosine_similarity(
-                            &self.embeddings[0],
-                            &self.embeddings[1]
-                        );
-                        
-                        ui.label(format!("Cosine similarity between chunk 1 & 2: {:.4}", similarity));
-                        
-                        // Visual similarity bar
-                        let width = 300.0;
-                        ui.add(egui::ProgressBar::new(similarity.max(0.0).min(1.0))
-                            .text(format!("{:.1}% similar", similarity * 100.0))
-                            .desired_width(width));
-                        
-                        // Interpretation
-                        ui.horizontal(|ui| {
-                            if similarity > 0.7 {
-                                ui.colored_label(egui::Color32::GREEN, "✅ Very similar");
-                            } else if similarity > 0.3 {
-                                ui.colored_label(egui::Color32::YELLOW, "⚠️ Somewhat similar");
-                            } else {
-                                ui.colored_label(egui::Color32::RED, "❌ Not similar");
-                            }
-                        });
-                    }
-                    
-                    // Clear button
-                    ui.separator();
-                    if ui.button("🗑️ Clear All").clicked() {
-                        self.chunks.clear();
-                        self.embeddings.clear();
-                    }
-                }
-                
-                // Processing indicator
-                if self.is_processing {
-                    ui.horizontal(|ui| {
-                        ui.spinner();
-                        ui.label("Candle is generating embeddings...");
                     });
+                    
+                    if self.embeddings.len() > 1 {
+                        let sim = self.cosine_similarity(&self.embeddings[0], &self.embeddings[1]);
+                        ui.add(egui::ProgressBar::new(sim.max(0.0).min(1.0)).text(format!("{:.1}% similar", sim * 100.0)).desired_width(220.0));
+                    }
+                    
+                    ui.separator();
+                    if ui.button("🗑️ Clear All").clicked() { self.chunks.clear(); self.embeddings.clear(); }
                 }
             } else {
-                // No file selected
                 ui.separator();
-                ui.label("ℹ️  Select a text file to begin");
-                ui.label("The app will use Candle to generate neural embeddings");
+                ui.label("ℹ️ Select a text file to begin");
             }
             
-            // Error display
             if let Some(error) = &self.error_message {
                 ui.separator();
                 ui.colored_label(egui::Color32::RED, format!("❌ Error: {}", error));
-                
-                if ui.button("Clear Error").clicked() {
-                    self.error_message = None;
-                }
             }
-            
-            // Footer info
-            ui.separator();
-            ui.horizontal(|ui| {
-                ui.label("Powered by:");
-                ui.monospace("Candle");
-                ui.label("•");
-                ui.monospace("EGUI");
-                ui.label("•");
-                ui.monospace("Rust");
-            });
         });
     }
 }

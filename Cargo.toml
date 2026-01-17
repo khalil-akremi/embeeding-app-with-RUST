@@ -15,7 +15,5 @@ rfd = "0.14"
 anyhow = "1.0"
 thiserror = "1.0"
 
-# ML - CAREFUL VERSIONING!
-candle-core = { version = "0.3.2", features = [] }  # Older but stable
-candle-nn = "0.3.2"
-tokenizers = "0.19"
+# (Optional) ML deps can be added back via a feature when needed
+# tokenizers = "0.19"
