@@ -1,19 +1,21 @@
 [package]
 name = "embedding-app"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
 
 [dependencies]
-# GUI Framework
-eframe = "0.27"  # Framework for running EGUI apps
-egui = "0.27"    # The GUI library itself
+# GUI
+eframe = "0.27"
+egui = "0.27"
 
+# File handling
+rfd = "0.14"
 
-# File operations
-anyhow = "1.0"   # For easy error handling
-thiserror = "1.0" # For custom error types
+# Utilities
+anyhow = "1.0"
+thiserror = "1.0"
 
-
-
-rfd = "0.14"  # Rust File Dialog - for file picking
-tokio = { version = "1.0", features = ["full"] }  # For async file operations
+# ML - CAREFUL VERSIONING!
+candle-core = { version = "0.3.2", features = [] }  # Older but stable
+candle-nn = "0.3.2"
+tokenizers = "0.19"
