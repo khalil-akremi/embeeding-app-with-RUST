@@ -1,9 +1,11 @@
 use std::fs;
 use eframe::egui;
-mod simple_model;
-use simple_model::MiniLMEmbedder;
 
+mod embedder;
+mod analyzers;
 
+use embedder::MiniLMEmbedder;
+use analyzers::{Anchors, SemanticAnalyzer, ChunkAnalysis, DocumentAnalysis};
 
 fn main() -> eframe::Result<()> {
     let native_options = eframe::NativeOptions {
@@ -31,6 +33,11 @@ struct MyApp {
     embedder: Option<MiniLMEmbedder>,
     model_loading: bool,
     model_loaded: bool,
+    anchors: Option<Anchors>,
+    chunk_analyses: Vec<ChunkAnalysis>,
+    doc_analysis: Option<DocumentAnalysis>,
+    emotion_threshold: f32,
+    theme_threshold: f32,
 }
 
 impl MyApp {
@@ -46,6 +53,11 @@ impl MyApp {
             embedder: None,
             model_loading: false,
             model_loaded: false,
+            anchors: None,
+            chunk_analyses: Vec::new(),
+            doc_analysis: None,
+            emotion_threshold: 0.20,
+            theme_threshold: 0.30,
         }
     }
     
@@ -55,9 +67,18 @@ impl MyApp {
         
         match MiniLMEmbedder::new() {
             Ok(embedder) => {
-                self.embedder = Some(embedder);
-                self.model_loaded = true;
-                self.error_message = Some("✅ Model loaded successfully!".to_string());
+                // Create anchors
+                match embedder.create_anchors() {
+                    Ok(anchors) => {
+                        self.anchors = Some(anchors);
+                        self.embedder = Some(embedder);
+                        self.model_loaded = true;
+                        self.error_message = Some("✅ Model and anchors loaded successfully!".to_string());
+                    }
+                    Err(e) => {
+                        self.error_message = Some(format!("Failed to create anchors: {}", e));
+                    }
+                }
             }
             Err(e) => {
                 self.error_message = Some(format!("Failed to load model: {}", e));
@@ -112,6 +133,9 @@ impl MyApp {
                     self.embeddings = embeddings;
                     self.error_message = Some(format!("✅ Generated {} embeddings", self.embeddings.len()));
                     println!("Successfully generated {} embeddings", self.embeddings.len());
+                    
+                    // Automatically run analysis after embedding
+                    self.analyze_chunks();
                 }
                 Err(e) => {
                     self.error_message = Some(format!("Failed to generate embeddings: {}", e));
@@ -121,6 +145,15 @@ impl MyApp {
             self.is_processing = false;
         } else {
             self.error_message = Some("Please load the model first!".to_string());
+        }
+    }
+    
+    fn analyze_chunks(&mut self) {
+        if let Some(anchors) = &self.anchors {
+            println!("Analyzing chunks...");
+            self.chunk_analyses = SemanticAnalyzer::analyze_all_chunks(&self.embeddings, anchors);
+            self.doc_analysis = Some(DocumentAnalysis::from_chunks(&self.chunk_analyses));
+            println!("Analysis complete!");
         }
     }
 }
@@ -232,6 +265,151 @@ impl eframe::App for MyApp {
                         if ui.button("🗑️ Clear All").clicked() {
                             self.chunks.clear();
                             self.embeddings.clear();
+                            self.chunk_analyses.clear();
+                            self.doc_analysis = None;
+                        }
+                    }
+                    
+                    // Analysis Results
+                    if !self.chunk_analyses.is_empty() {
+                        ui.separator();
+                        ui.heading("🔍 Semantic Analysis Results");
+                        
+                        // Document-level summary
+                        if let Some(doc_analysis) = &self.doc_analysis {
+                            ui.separator();
+                            ui.label("📊 Document Overview:");
+                            
+                            egui::Grid::new("doc_stats")
+                                .striped(true)
+                                .show(ui, |ui| {
+                                    ui.label("Chunks analyzed:");
+                                    ui.label(format!("{}", doc_analysis.chunk_count));
+                                    ui.end_row();
+                                    
+                                    ui.label("Overall sentiment:");
+                                    let sent = &doc_analysis.overall_sentiment;
+                                    ui.label(format!("{} ({:.1}%)", 
+                                        sent.dominant(), 
+                                        sent.confidence() * 100.0
+                                    ));
+                                    ui.end_row();
+                                    
+                                    ui.label("Sentiment breakdown:");
+                                    ui.horizontal(|ui| {
+                                        ui.colored_label(egui::Color32::GREEN, 
+                                            format!("Pos: {:.1}%", sent.positive * 100.0));
+                                        ui.colored_label(egui::Color32::RED, 
+                                            format!("Neg: {:.1}%", sent.negative * 100.0));
+                                        ui.colored_label(egui::Color32::GRAY, 
+                                            format!("Neu: {:.1}%", sent.neutral * 100.0));
+                                    });
+                                    ui.end_row();
+                                    
+                                    let (emotion, score) = doc_analysis.overall_emotion.dominant();
+                                    ui.label("Dominant emotion:");
+                                    ui.label(format!("{} ({:.1}%)", emotion, score * 100.0));
+                                    ui.end_row();
+                                    
+                                    ui.label("Top themes:");
+                                    ui.vertical(|ui| {
+                                        for (theme, score) in doc_analysis.theme_distribution.iter().take(3) {
+                                            ui.label(format!("• {} ({:.1}%)", theme, score * 100.0));
+                                        }
+                                    });
+                                    ui.end_row();
+                                });
+                        }
+                        
+                        ui.separator();
+                        
+                        // Threshold controls
+                        ui.horizontal(|ui| {
+                            ui.label("Emotion threshold:");
+                            ui.add(egui::Slider::new(&mut self.emotion_threshold, 0.0..=0.5)
+                                .text("%")
+                                .custom_formatter(|n, _| format!("{:.0}%", n * 100.0)));
+                            
+                            ui.separator();
+                            
+                            ui.label("Theme threshold:");
+                            ui.add(egui::Slider::new(&mut self.theme_threshold, 0.0..=0.6)
+                                .text("%")
+                                .custom_formatter(|n, _| format!("{:.0}%", n * 100.0)));
+                        });
+                        
+                        ui.separator();
+                        
+                        // Per-chunk analysis
+                        egui::ScrollArea::vertical().max_height(300.0).show(ui, |ui| {
+                            for analysis in &self.chunk_analyses {
+                                ui.collapsing(format!("Chunk {} Analysis", analysis.chunk_index + 1), |ui| {
+                                    // Show chunk text preview
+                                    if let Some(chunk_text) = self.chunks.get(analysis.chunk_index) {
+                                        let preview = if chunk_text.len() > 150 {
+                                            format!("{}...", &chunk_text[..150])
+                                        } else {
+                                            chunk_text.clone()
+                                        };
+                                        ui.label(format!("📝 Text: {}", preview));
+                                        ui.separator();
+                                    }
+                                    
+                                    // Sentiment
+                                    let sent = &analysis.sentiment;
+                                    ui.label(format!("😊 Sentiment: {} ({:.1}%)", 
+                                        sent.dominant(), 
+                                        sent.confidence() * 100.0
+                                    ));
+                                    ui.horizontal(|ui| {
+                                        ui.add(egui::ProgressBar::new(sent.positive)
+                                            .text(format!("Pos: {:.1}%", sent.positive * 100.0))
+                                            .fill(egui::Color32::GREEN));
+                                    });
+                                    ui.horizontal(|ui| {
+                                        ui.add(egui::ProgressBar::new(sent.negative)
+                                            .text(format!("Neg: {:.1}%", sent.negative * 100.0))
+                                            .fill(egui::Color32::RED));
+                                    });
+                                    ui.horizontal(|ui| {
+                                        ui.add(egui::ProgressBar::new(sent.neutral)
+                                            .text(format!("Neu: {:.1}%", sent.neutral * 100.0))
+                                            .fill(egui::Color32::GRAY));
+                                    });
+                                    
+                                    ui.separator();
+                                    
+                                    // Emotions
+                                    let emotions = analysis.emotion.top_emotions(self.emotion_threshold);
+                                    if !emotions.is_empty() {
+                                        ui.label(format!("🎭 Emotions (>{:.0}% threshold):", self.emotion_threshold * 100.0));
+                                        for (emotion, score) in emotions {
+                                            ui.label(format!("  • {}: {:.1}%", emotion, score * 100.0));
+                                        }
+                                    } else {
+                                        ui.label("🎭 Emotions: None above threshold");
+                                    }
+                                    
+                                    ui.separator();
+                                    
+                                    // Themes
+                                    let themes = analysis.themes.top_themes(self.theme_threshold);
+                                    if !themes.is_empty() {
+                                        ui.label(format!("🏷️ Themes (>{:.0}% threshold):", self.theme_threshold * 100.0));
+                                        for (theme, score) in themes {
+                                            ui.label(format!("  • {}: {:.1}%", theme, score * 100.0));
+                                        }
+                                    } else {
+                                        ui.label("🏷️ Themes: None above threshold");
+                                    }
+                                });
+                            }
+                        });
+                        
+                        ui.separator();
+                        if ui.button("🗑️ Clear Analysis").clicked() {
+                            self.chunk_analyses.clear();
+                            self.doc_analysis = None;
                         }
                     }
                 } else if self.model_loaded {

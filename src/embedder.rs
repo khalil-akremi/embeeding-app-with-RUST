@@ -4,6 +4,7 @@ use candle_nn::VarBuilder;
 use candle_transformers::models::bert::{BertModel, Config, DTYPE};
 use hf_hub::{api::sync::Api, Repo, RepoType};
 use tokenizers::Tokenizer;
+use crate::analyzers::Anchors;
 
 pub struct MiniLMEmbedder {
     model: BertModel,
@@ -112,5 +113,48 @@ impl MiniLMEmbedder {
         }
         
         dot / (norm_a * norm_b)
+    }
+    
+    pub fn create_anchors(&self) -> Result<Anchors> {
+        println!("Creating anchor embeddings...");
+        
+        // Sentiment anchors
+        let sentiment_anchors = Anchors::sentiment_anchors();
+        let positive = self.embed(sentiment_anchors[0].1)?;
+        let negative = self.embed(sentiment_anchors[1].1)?;
+        let neutral = self.embed(sentiment_anchors[2].1)?;
+        
+        // Emotion anchors
+        let emotion_anchors = Anchors::emotion_anchors();
+        let joy = self.embed(emotion_anchors[0].1)?;
+        let sadness = self.embed(emotion_anchors[1].1)?;
+        let anger = self.embed(emotion_anchors[2].1)?;
+        let fear = self.embed(emotion_anchors[3].1)?;
+        let surprise = self.embed(emotion_anchors[4].1)?;
+        let disgust = self.embed(emotion_anchors[5].1)?;
+        
+        // Theme anchors
+        let theme_anchors = Anchors::default_theme_anchors();
+        let mut theme_embeddings = Vec::new();
+        
+        for (name, text) in theme_anchors {
+            let embedding = self.embed(text)?;
+            theme_embeddings.push((name.to_string(), embedding));
+        }
+        
+        println!("Anchor embeddings created successfully!");
+        
+        Ok(Anchors {
+            positive,
+            negative,
+            neutral,
+            joy,
+            sadness,
+            anger,
+            fear,
+            surprise,
+            disgust,
+            theme_embeddings,
+        })
     }
 }
